@@ -1,1 +1,523 @@
-{"metadata":{"kernelspec":{"name":"ir","display_name":"R","language":"R"},"language_info":{"name":"R","codemirror_mode":"r","pygments_lexer":"r","mimetype":"text/x-r-source","file_extension":".r","version":"4.0.5"},"kaggle":{"accelerator":"none","dataSources":[{"sourceId":73278,"databundleVersionId":8121328,"sourceType":"competition"}],"dockerImageVersionId":30618,"isInternetEnabled":true,"language":"rmarkdown","sourceType":"script","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"# %% [code]\n---\ntitle: \"Flood prediction | Lightgbm TidyModels | R\"\ndate: \"2024-May-07\"\noutput:\n  html_document:\n    toc: true\n    toc_depth: 6\n    code_folding: show\n    theme: cosmo\n    highlight: tango\neditor_options:\n  markdown:\n    wrap: 72\n  chunk_output_type: console\n---\n\n```{r setup, include=FALSE}\n\nknitr::opts_chunk$set(echo = TRUE,\n                      warning = FALSE,\n                      message = FALSE,\n                      fig.align = \"center\",\n                      fig.width = 7,\n                      fig.height = 5)\n\n```\n\n\n## About the Data set:\n\nDataset Description\n\nThe dataset for this competition (both train and test) was generated from a deep learning model trained on the Flood Prediction Factors dataset. Feature distributions are close to, but not exactly the same, as the original. Feel free to use the original dataset as part of this competition, both to explore differences as well as to see whether incorporating the original in training improves model performance.\n\nFiles:\n\n**train.csv** - the training dataset; FloodProbability is the target.\n**test.csv** - the test dataset; your objective is to predict the FloodProbability for each row.\n**sample_submission.csv** - a sample submission file in the correct formatrmat  \n\n\n## Import libraries\n\n```{r import-libraries}\n\n\nlibrary(tidyverse)\nlibrary(janitor)\nlibrary(scales)\nlibrary(GGally)\nlibrary(kableExtra)\nlibrary(ggcorrplot)\nlibrary(ggthemes)\nlibrary(ggridges)\n\n# Model\n\n\nlibrary(tidymodels)\nlibrary(stacks)\nlibrary(doParallel)\nlibrary(bonsai)\nlibrary(finetune)\nlibrary(themis)\nlibrary(rlang)\n\ntheme_set(theme_light())\n\n```\n\n\n\n## Import data\n\n```{r import-data}\n\n\nflood_df_train <- read_csv(\"/kaggle/input/playground-series-s4e5/train.csv\") %>% \n  clean_names() %>% \n  select(-id)\n\nflood_df_test <- read_csv(\"/kaggle/input/playground-series-s4e5/test.csv\") %>% \n  clean_names() %>% \n  select(-id)\n\nsample_submission <- read_csv(\"/kaggle/input/playground-series-s4e5/sample_submission.csv\")\n\n```\n\n## EDA\n\n### Glimpse\n\n```{r}\n\n\nflood_df_train %>% \n  glimpse()\n\n```\n\n\n### New features\n\n```{r}\n\n\nmen_act_feat = c(\n  \"monsoon_intensity\",\n  \"topography_drainage\",\n  \"river_management\",\n  \"deforestation\",\n  \"urbanization\",\n  \"climate_change\",\n  \"dams_quality\",\n  \"siltation\",\n  \"agricultural_practices\",\n  \"encroachments\",\n  \"ineffective_disaster_preparedness\",\n  \"drainage_systems\",\n  \"deteriorating_infrastructure\",\n  \"population_score\",\n  \"wetland_loss\",\n  \"inadequate_planning\",\n  \"political_factors\"\n)\n\nnatural_feat = c(\"coastal_vulnerability\", \"landslides\", \"watersheds\")\n\n\nflood_df_train_nf <- flood_df_train %>% \n  mutate(across(monsoon_intensity:political_factors, ~as.integer(.x)),\n         v_sum = rowSums(select(., monsoon_intensity:political_factors)),\n         humans_act = rowSums(select(., all_of(men_act_feat))),\n         nature_feat = rowSums(select(., all_of(natural_feat))),\n         humans_act_over_natural_feat = humans_act / nature_feat)\n\n\nflood_df_test_nf <- flood_df_test %>% \n  mutate(across(monsoon_intensity:political_factors, ~as.integer(.x)),\n         v_sum = rowSums(select(., monsoon_intensity:political_factors)),\n         humans_act = rowSums(select(., all_of(men_act_feat))),\n         nature_feat = rowSums(select(., all_of(natural_feat))),\n         humans_act_over_natural_feat = humans_act / nature_feat)\n\nnew_features <- c(\"v_sum\", \"humans_act\", \"nature_feat\", \"humans_act_over_natural_feat\" )\n\n\n```\n\n\n### Counts of distinct values\n\n```{r}\n\nmap_df(flood_df_train_nf, n_distinct) %>%\n  pivot_longer(everything(), names_to = \"Variable\", values_to = \"Counts of distinct values\") %>%\n  arrange(`Counts of distinct values`) %>% \n  kbl() %>%\n  kable_classic(full_width = F)\n\n```\n\n\n### Counts of duplicated values\n\n```{r}\n\nmap_df(flood_df_train_nf, function(x) sum(duplicated(x))) %>% \npivot_longer(everything(),\n               names_to = \"Variable\",\n               values_to = \"Counts of duplicated values\") %>% \n   arrange(`Counts of duplicated values`) %>% \n                    kbl() %>% \n  kable_classic(full_width = F)\n\n```\n\n\n### Target Variable distribution\n\n\n```{r, fig.width = 12, fig.height = 4}\n\n\nflood_df_train %>% \n  select(flood_probability) %>% \n  ggplot(aes(x = flood_probability)) +\n  geom_histogram(bins = 60, fill = \"gray60\", color = \"white\") +\n  labs(title = \"Target Variable distribution\")\n\n\n\n```\n\n\n### Target variable distribution by Political factors\n\n```{r}\n\nflood_df_train %>%\n  select(political_factors, flood_probability) %>%\n  ggplot(aes(x = flood_probability, y = political_factors, group=political_factors, fill = political_factors)) +\n  geom_boxplot(\n    color = \"gray80\",\n    outlier.colour = \"darkred\",\n    show.legend = FALSE\n  ) +\n  scale_fill_gradient(low = \"green\", high = \"darkred\") +\n  labs(title = \"Target variable distribution by Political factors\",\n       x = \"Flood probability\",\n       y = \"Political factors\")\n\n```\n\n\n### Correlation Matrix (Train Dataset)\n\n```{r, fig.width=7, fig.height= 7, fig.align=\"center\"}\n\ntp_col = \"#1D2671\"\ntn_col = \"#C33764\"\n\nflood_df_train_nf %>%\n  cor() %>%\n  ggcorrplot(\n    outline.col = \"white\",\n    ggtheme = ggplot2::theme_minimal,\n    colors = c(tn_col, \"white\", tp_col),\n    tl.cex = 7,\n    lab = TRUE,\n    lab_size = 2,\n    lab_col = \"black\",\n    show.legend = TRUE\n  ) +\n  theme(\n    plot.background = element_rect(fill = \"#edf2f7\", color = \"white\"),\n    plot.title.position = \"plot\",\n    plot.title = element_text(hjust = 0.5, size = 10)\n  ) +\n  labs(title = \"Correlation Matrix (Train Dataset)\")\n\n```\n\n\n```{r, fig.height= 10, fig.width= 10}\n\nflood_df_train_nf %>%\n  mutate(fp_bins = as.factor(if_else(\n    flood_probability < 0.5, \"below-0.5\", \"above-0.5\"\n  ))) %>%\n  pivot_longer(-c(flood_probability, fp_bins),\n               names_to = \"variable\",\n               values_to = \"value\") %>%\n  ggplot(aes(x = value, fill = fp_bins)) +\n  geom_histogram( bins = 60) +\n  scale_fill_manual(values = c(\"darkred\", \"orange2\" )) +\n  facet_wrap(vars(variable), \n             scales = \"free\", \n             ncol = 3) +\n  guides(fill = guide_legend(ncol = 1))+\n  theme_minimal() +\n  theme(\n    legend.position = \"top\",\n    strip.background = element_rect(fill = \"white\"),\n    strip.background.x = element_rect(colour = \"white\"),\n    strip.background.y = element_rect(colour = \"white\"),\n    strip.text = element_text(\n      color = \"black\",\n      face = \"bold\",\n      size = 8\n    ),\n    axis.text.y = element_blank()\n  )+\n  labs(title = \"Numeric Variables Distributions | Below-0.5 and Above-0.5\",\n       fill = \"Flood Prob.\",\n       x = NULL,\n       y = NULL\n       )\n\n```\n\n\n\n### Ridge Plot 2% sample\n\n```{r, fig.height= 12, fig.width= 10}\n\nflood_df_train_nf %>% \n  select(-c(all_of(new_features))) %>% \n  group_by(flood_probability ) %>%\n  slice_sample(prop = 0.02) %>%\n  ungroup()  %>%\n  pivot_longer(\n    cols = -flood_probability,\n    names_to = \"variable\",\n    values_to = \"values\"\n  ) %>%\n  ggplot(aes(\n    x = flood_probability,\n    y = variable,\n    height = values,\n    fill = variable\n  )) +\n  geom_density_ridges(\n    show.legend = FALSE,\n    stat = \"identity\",\n    scale = 2,\n    alpha = 0.5,\n    color = \"white\"\n  ) +\n  theme_bw() +\n  scale_fill_manual(values = rep(c(\n    \"#005666\", \"#60BCC4\", \"#8E0000\", \"#F48B0B\", \"#11F6CD\"\n  ), 5)) +\n  labs(\n    title = \"Ridge Plot 2% sample\",\n    x = NULL,\n    y = NULL\n  )\n\n\n```\n\n### Ridge Plot 2% sample | New features\n\n```{r, fig.height= 6, fig.width= 6}\n\nflood_df_train_nf %>% \n  select(all_of(new_features), flood_probability) %>% \n  group_by(flood_probability ) %>%\n  slice_sample(prop = 0.02) %>%\n  ungroup()  %>%\n  pivot_longer(\n    cols = -flood_probability,\n    names_to = \"variable\",\n    values_to = \"values\"\n  ) %>%\n  ggplot(aes(\n    x = flood_probability,\n    y = variable,\n    height = values,\n    fill = variable\n  )) +\n  geom_density_ridges(\n    show.legend = FALSE,\n    stat = \"identity\",\n    scale = 2,\n    alpha = 0.3,\n    color = \"white\"\n  ) +\n  theme_bw() +\n  scale_fill_manual(values = rep(c(\n    \"#005666\", \"#60BCC4\", \"#8E0000\", \"#F48B0B\", \"#11F6CD\"\n  ), 5)) +\n  labs(\n    title = \"Ridge Plot 2% sample | New features\",\n    x = NULL,\n    y = NULL\n  )\n\n\n```\n\n\n\n\n# Model\n\n\n## Data split\n\n```{r Data-Split}\n\n\nflood_df_train_for_model <- flood_df_train_nf %>% \n  group_by(flood_probability ) %>%\n  slice_sample(prop = 0.5) %>%\n  ungroup() \n\n\nseed = 27\n\nset.seed(seed)\n\n\ntrain_data <- flood_df_train_for_model\n\n\n#### Generate CV samples 10 folds\n\nset.seed(seed)\ncv_fold <- vfold_cv (train_data, v = 10)\n```\n\n\n\n\n\n## Lightgbm model\n\n```{r lightgbm-tune-grid }\n\nlgbm_rec <-\n  recipe(flood_probability ~ ., data = train_data) \n\n\nlgbm_spec <-\n  boost_tree(\n    trees = tune(),\n    tree_depth = tune(),\n    learn_rate = tune(),\n    mtry = tune(),\n    min_n = tune(),\n    loss_reduction = tune()\n  ) %>%\n  set_engine(engine = \"lightgbm\",\n             num_leaves = tune()\n) %>%\n  set_mode(mode = \"regression\")\n\n\n### Create a workflow\n\nlgbm_wf <- workflow() %>%\n  add_recipe(lgbm_rec) %>%\n  add_model(lgbm_spec)\n\nlgbm_wf\n\n\nset.seed(seed)\n\nlgbm_ctrl <- control_grid(verbose = TRUE,\n                        save_pred = TRUE,\n                        save_workflow = TRUE)\n\n\n\nparams <- lgbm_wf %>%\n  extract_parameter_set_dials() %>%\n  update(trees = trees(range = c(800, 3000)),\n         mtry = mtry(range = c(5, 20)),\n         min_n = min_n(range = c(10, 30)),\n         tree_depth = tree_depth(range = c(2, 17)),\n         learn_rate = learn_rate(range = c(0.001, 0.01)),\n         num_leaves = num_leaves(range = c(4, 50))\n         ) %>%\n  finalize(train_data)\n\n\n\nlgbm_res <- tune_grid(\n  lgbm_wf,\n  resamples = cv_fold,\n  grid = 30,\n  control = lgbm_ctrl,\n  metrics = metric_set(rmse),\n  param_info = params\n)\n\nshow_best(lgbm_res, metric = \"rmse\") %>% \n  kbl(format = \"html\", caption = \"Lightgbm Best parameters | Tune Grid\") %>%\n  kable_classic(full_width = F)\n\n\n```\n\n```{r lightgbm-fine-tune}\n\nset.seed(seed)\n\nlgbm_sim_anneal <- tune_sim_anneal(\n  lgbm_wf,\n  resamples = cv_fold,\n  iter = 5,\n  initial = lgbm_res,\n  control = control_sim_anneal(\n    verbose = TRUE,\n    verbose_iter = TRUE,\n    save_pred = TRUE,\n    save_workflow = TRUE\n  ),\n  metrics = metric_set(rmse),\n  param_info = params\n)\n\n\nshow_best(lgbm_sim_anneal, metric = \"rmse\") %>% \n  kbl(format = \"html\", caption = \"Lightgbm Best parameters | Fine Tune\") %>%\n  kable_classic(full_width = F)\n\n\n```\n\n\n\n## Ensamble Stacking\n\n```{r ensamble-stacking}\n\nensamble_stacking <- stacks() %>%  \n  stacks::add_candidates(lgbm_sim_anneal) %>% \n  stacks::blend_predictions(\n    penalty = c(10^seq(-4,-1,0.1)),,\n    metric = metric_set(rmse),\n    control = tune::control_grid(allow_par = TRUE)\n  )\n\nensemble <- fit_members(ensamble_stacking)\n\n```\n\n\n### Submission\n\n```{r Submission}\n\nsubmit <- stacks::augment(ensemble, flood_df_test_nf) \n\n\nsample_submission %>%\n  mutate(\n    FloodProbability  = submit$.pred\n  ) %>%\n  write_csv(\"submission.csv\")\n\n```\n\n\n## Fin\n\n\nI appreciate you taking the time to read! I welcome your feedback.","metadata":{"_uuid":"b2d8d491-f2ed-4a5b-be12-c1d6cc7b9292","_cell_guid":"ee29fbec-f481-49af-a3b3-1b8693150670","collapsed":false,"jupyter":{"outputs_hidden":false},"execution":{"iopub.status.busy":"2024-05-13T13:54:22.364550Z","iopub.execute_input":"2024-05-13T13:54:22.371083Z","iopub.status.idle":"2024-05-13T13:54:22.540216Z"},"trusted":true},"execution_count":1,"outputs":[{"ename":"ERROR","evalue":"Error in parse(text = x, srcfile = src): attempt to use zero-length variable name\n","traceback":["Error in parse(text = x, srcfile = src): attempt to use zero-length variable name\nTraceback:\n"],"output_type":"error"}]}]}
+# %% [code]
+---
+title: "Flood prediction | Lightgbm TidyModels | R"
+date: "2024-May-07"
+output:
+  html_document:
+    toc: true
+    toc_depth: 6
+    code_folding: show
+    theme: cosmo
+    highlight: tango
+editor_options:
+  markdown:
+    wrap: 72
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE,
+                      fig.align = "center",
+                      fig.width = 7,
+                      fig.height = 5)
+
+```
+
+
+## About the Data set:
+
+Dataset Description
+
+The dataset for this competition (both train and test) was generated from a deep learning model trained on the Flood Prediction Factors dataset. Feature distributions are close to, but not exactly the same, as the original. Feel free to use the original dataset as part of this competition, both to explore differences as well as to see whether incorporating the original in training improves model performance.
+
+Files:
+
+**train.csv** - the training dataset; FloodProbability is the target.
+**test.csv** - the test dataset; your objective is to predict the FloodProbability for each row.
+**sample_submission.csv** - a sample submission file in the correct formatrmat  
+
+
+## Import libraries
+
+```{r import-libraries}
+
+library(tidyverse)
+library(janitor)
+library(scales)
+library(GGally)
+library(kableExtra)
+library(ggcorrplot)
+library(ggthemes)
+library(ggridges)
+
+# Model
+
+library(tidymodels)
+library(stacks)
+library(doParallel)
+library(bonsai)
+library(finetune)
+library(themis)
+library(rlang)
+
+theme_set(theme_light())
+```
+
+## Import data
+
+```{r import-data}
+
+
+flood_df_train <- read_csv("/kaggle/input/playground-series-s4e5/train.csv") %>% 
+  clean_names() %>% 
+  select(-id)
+
+flood_df_test <- read_csv("/kaggle/input/playground-series-s4e5/test.csv") %>% 
+  clean_names() %>% 
+  select(-id)
+
+sample_submission <- read_csv("/kaggle/input/playground-series-s4e5/sample_submission.csv")
+
+```
+
+## EDA
+
+### Glimpse
+
+```{r}
+
+
+flood_df_train %>% 
+  glimpse()
+
+```
+
+
+### New features
+
+```{r}
+
+
+men_act_feat = c(
+  "monsoon_intensity",
+  "topography_drainage",
+  "river_management",
+  "deforestation",
+  "urbanization",
+  "climate_change",
+  "dams_quality",
+  "siltation",
+  "agricultural_practices",
+  "encroachments",
+  "ineffective_disaster_preparedness",
+  "drainage_systems",
+  "deteriorating_infrastructure",
+  "population_score",
+  "wetland_loss",
+  "inadequate_planning",
+  "political_factors"
+)
+
+natural_feat = c("coastal_vulnerability", "landslides", "watersheds")
+
+
+flood_df_train_nf <- flood_df_train %>% 
+  mutate(across(monsoon_intensity:political_factors, ~as.integer(.x)),
+         v_sum = rowSums(select(., monsoon_intensity:political_factors)),
+         humans_act = rowSums(select(., all_of(men_act_feat))),
+         nature_feat = rowSums(select(., all_of(natural_feat))),
+         humans_act_over_natural_feat = humans_act / nature_feat)
+
+
+flood_df_test_nf <- flood_df_test %>% 
+  mutate(across(monsoon_intensity:political_factors, ~as.integer(.x)),
+         v_sum = rowSums(select(., monsoon_intensity:political_factors)),
+         humans_act = rowSums(select(., all_of(men_act_feat))),
+         nature_feat = rowSums(select(., all_of(natural_feat))),
+         humans_act_over_natural_feat = humans_act / nature_feat)
+
+new_features <- c("v_sum", "humans_act", "nature_feat", "humans_act_over_natural_feat" )
+
+
+```
+
+
+### Counts of distinct values
+
+```{r}
+
+map_df(flood_df_train_nf, n_distinct) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Counts of distinct values") %>%
+  arrange(`Counts of distinct values`) %>% 
+  kbl() %>%
+  kable_classic(full_width = F)
+
+```
+
+
+### Counts of duplicated values
+
+```{r}
+
+map_df(flood_df_train_nf, function(x) sum(duplicated(x))) %>% 
+pivot_longer(everything(),
+               names_to = "Variable",
+               values_to = "Counts of duplicated values") %>% 
+   arrange(`Counts of duplicated values`) %>% 
+                    kbl() %>% 
+  kable_classic(full_width = F)
+
+```
+
+
+### Target Variable distribution
+
+
+```{r, fig.width = 12, fig.height = 4}
+
+
+flood_df_train %>% 
+  select(flood_probability) %>% 
+  ggplot(aes(x = flood_probability)) +
+  geom_histogram(bins = 60, fill = "gray60", color = "white") +
+  labs(title = "Target Variable distribution")
+
+
+
+```
+
+
+### Target variable distribution by Political factors
+
+```{r}
+
+flood_df_train %>%
+  select(political_factors, flood_probability) %>%
+  ggplot(aes(x = flood_probability, y = political_factors, group=political_factors, fill = political_factors)) +
+  geom_boxplot(
+    color = "gray80",
+    outlier.colour = "darkred",
+    show.legend = FALSE
+  ) +
+  scale_fill_gradient(low = "green", high = "darkred") +
+  labs(title = "Target variable distribution by Political factors",
+       x = "Flood probability",
+       y = "Political factors")
+
+```
+
+
+### Correlation Matrix (Train Dataset)
+
+```{r, fig.width=7, fig.height= 7, fig.align="center"}
+
+tp_col = "#1D2671"
+tn_col = "#C33764"
+
+flood_df_train_nf %>%
+  cor() %>%
+  ggcorrplot(
+    outline.col = "white",
+    ggtheme = ggplot2::theme_minimal,
+    colors = c(tn_col, "white", tp_col),
+    tl.cex = 7,
+    lab = TRUE,
+    lab_size = 2,
+    lab_col = "black",
+    show.legend = TRUE
+  ) +
+  theme(
+    plot.background = element_rect(fill = "#edf2f7", color = "white"),
+    plot.title.position = "plot",
+    plot.title = element_text(hjust = 0.5, size = 10)
+  ) +
+  labs(title = "Correlation Matrix (Train Dataset)")
+
+```
+
+
+```{r, fig.height= 10, fig.width= 10}
+
+flood_df_train_nf %>%
+  mutate(fp_bins = as.factor(if_else(
+    flood_probability < 0.5, "below-0.5", "above-0.5"
+  ))) %>%
+  pivot_longer(-c(flood_probability, fp_bins),
+               names_to = "variable",
+               values_to = "value") %>%
+  ggplot(aes(x = value, fill = fp_bins)) +
+  geom_histogram( bins = 60) +
+  scale_fill_manual(values = c("darkred", "orange2" )) +
+  facet_wrap(vars(variable), 
+             scales = "free", 
+             ncol = 3) +
+  guides(fill = guide_legend(ncol = 1))+
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    strip.background = element_rect(fill = "white"),
+    strip.background.x = element_rect(colour = "white"),
+    strip.background.y = element_rect(colour = "white"),
+    strip.text = element_text(
+      color = "black",
+      face = "bold",
+      size = 8
+    ),
+    axis.text.y = element_blank()
+  )+
+  labs(title = "Numeric Variables Distributions | Below-0.5 and Above-0.5",
+       fill = "Flood Prob.",
+       x = NULL,
+       y = NULL
+       )
+
+```
+
+
+
+### Ridge Plot 2% sample
+
+```{r, fig.height= 12, fig.width= 10}
+
+flood_df_train_nf %>% 
+  select(-c(all_of(new_features))) %>% 
+  group_by(flood_probability ) %>%
+  slice_sample(prop = 0.02) %>%
+  ungroup()  %>%
+  pivot_longer(
+    cols = -flood_probability,
+    names_to = "variable",
+    values_to = "values"
+  ) %>%
+  ggplot(aes(
+    x = flood_probability,
+    y = variable,
+    height = values,
+    fill = variable
+  )) +
+  geom_density_ridges(
+    show.legend = FALSE,
+    stat = "identity",
+    scale = 2,
+    alpha = 0.5,
+    color = "white"
+  ) +
+  theme_bw() +
+  scale_fill_manual(values = rep(c(
+    "#005666", "#60BCC4", "#8E0000", "#F48B0B", "#11F6CD"
+  ), 5)) +
+  labs(
+    title = "Ridge Plot 2% sample",
+    x = NULL,
+    y = NULL
+  )
+
+
+```
+
+### Ridge Plot 2% sample | New features
+
+```{r, fig.height= 6, fig.width= 6}
+
+flood_df_train_nf %>% 
+  select(all_of(new_features), flood_probability) %>% 
+  group_by(flood_probability ) %>%
+  slice_sample(prop = 0.02) %>%
+  ungroup()  %>%
+  pivot_longer(
+    cols = -flood_probability,
+    names_to = "variable",
+    values_to = "values"
+  ) %>%
+  ggplot(aes(
+    x = flood_probability,
+    y = variable,
+    height = values,
+    fill = variable
+  )) +
+  geom_density_ridges(
+    show.legend = FALSE,
+    stat = "identity",
+    scale = 2,
+    alpha = 0.3,
+    color = "white"
+  ) +
+  theme_bw() +
+  scale_fill_manual(values = rep(c(
+    "#005666", "#60BCC4", "#8E0000", "#F48B0B", "#11F6CD"
+  ), 5)) +
+  labs(
+    title = "Ridge Plot 2% sample | New features",
+    x = NULL,
+    y = NULL
+  )
+
+
+```
+
+
+
+
+# Model
+
+
+## Data split
+
+```{r Data-Split}
+
+
+flood_df_train_for_model <- flood_df_train_nf %>% 
+  group_by(flood_probability ) %>%
+  slice_sample(prop = 0.5) %>%
+  ungroup() 
+
+
+seed = 27
+
+set.seed(seed)
+
+
+train_data <- flood_df_train_for_model
+
+
+#### Generate CV samples 10 folds
+
+set.seed(seed)
+cv_fold <- vfold_cv (train_data, v = 10)
+```
+
+
+
+
+
+## Lightgbm model
+
+```{r lightgbm-tune-grid }
+
+lgbm_rec <-
+  recipe(flood_probability ~ ., data = train_data) 
+
+
+lgbm_spec <-
+  boost_tree(
+    trees = tune(),
+    tree_depth = tune(),
+    learn_rate = tune(),
+    mtry = tune(),
+    min_n = tune(),
+    loss_reduction = tune()
+  ) %>%
+  set_engine(engine = "lightgbm",
+             num_leaves = tune()
+) %>%
+  set_mode(mode = "regression")
+
+
+### Create a workflow
+
+lgbm_wf <- workflow() %>%
+  add_recipe(lgbm_rec) %>%
+  add_model(lgbm_spec)
+
+lgbm_wf
+
+
+set.seed(seed)
+
+lgbm_ctrl <- control_grid(verbose = TRUE,
+                        save_pred = TRUE,
+                        save_workflow = TRUE)
+
+
+
+params <- lgbm_wf %>%
+  extract_parameter_set_dials() %>%
+  update(trees = trees(range = c(800, 3000)),
+         mtry = mtry(range = c(5, 20)),
+         min_n = min_n(range = c(10, 30)),
+         tree_depth = tree_depth(range = c(2, 17)),
+         learn_rate = learn_rate(range = c(0.001, 0.01)),
+         num_leaves = num_leaves(range = c(4, 50))
+         ) %>%
+  finalize(train_data)
+
+
+
+lgbm_res <- tune_grid(
+  lgbm_wf,
+  resamples = cv_fold,
+  grid = 30,
+  control = lgbm_ctrl,
+  metrics = metric_set(rmse),
+  param_info = params
+)
+
+show_best(lgbm_res, metric = "rmse") %>% 
+  kbl(format = "html", caption = "Lightgbm Best parameters | Tune Grid") %>%
+  kable_classic(full_width = F)
+
+
+```
+
+```{r lightgbm-fine-tune}
+
+set.seed(seed)
+
+lgbm_sim_anneal <- tune_sim_anneal(
+  lgbm_wf,
+  resamples = cv_fold,
+  iter = 5,
+  initial = lgbm_res,
+  control = control_sim_anneal(
+    verbose = TRUE,
+    verbose_iter = TRUE,
+    save_pred = TRUE,
+    save_workflow = TRUE
+  ),
+  metrics = metric_set(rmse),
+  param_info = params
+)
+
+
+show_best(lgbm_sim_anneal, metric = "rmse") %>% 
+  kbl(format = "html", caption = "Lightgbm Best parameters | Fine Tune") %>%
+  kable_classic(full_width = F)
+
+
+```
+
+
+
+## Ensamble Stacking
+
+```{r ensamble-stacking}
+
+ensamble_stacking <- stacks() %>%  
+  stacks::add_candidates(lgbm_sim_anneal) %>% 
+  stacks::blend_predictions(
+    penalty = c(10^seq(-4,-1,0.1)),,
+    metric = metric_set(rmse),
+    control = tune::control_grid(allow_par = TRUE)
+  )
+
+ensemble <- fit_members(ensamble_stacking)
+
+```
+
+
+### Submission
+
+```{r Submission}
+
+submit <- stacks::augment(ensemble, flood_df_test_nf) 
+
+
+sample_submission %>%
+  mutate(
+    FloodProbability  = submit$.pred
+  ) %>%
+  write_csv("submission.csv")
+```

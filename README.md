@@ -1,5 +1,21 @@
 ![swan on a lake](./images/header.png)
 
+## TODO
+
+- [ ] Add flood predictor dataset
+- [ ] R markdown zettel notes + `image` + `subtitle` + `description` + `categories`
+- [ ] tidymodels zettel notes
+- [ ] what is janitor package + `clean_names()`
+- [ ] R2 score
+  - https://scikit-learn.org/stable/modules/generated/sklearn.metrics.r2_score.html
+  - https://scikit-learn.org/stable/modules/model_evaluation.html#r2-score
+  - https://en.wikipedia.org/wiki/Coefficient_of_determination
+- [ ] since train * test dataset = on apas besoin de faire split sur le train ?
+- [ ] split CV pour éviter le sur apprentissage
+- [ ] remove `id` : 0 intérêt pour l'apprentissage
+- [ ]
+
+
 **Welcome to the 2024 [Kaggle Playground Series - Season 4, Episode 5](https://www.kaggle.com/competitions/playground-series-s4e5)!**
 
 Each month, Kaggle provides interesting and approachable datasets to practice
